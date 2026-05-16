@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Environment / secrets — never commit these
+.env
+*.env
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# ADK runtime
+.adk/
