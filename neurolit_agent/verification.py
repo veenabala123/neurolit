@@ -111,25 +111,55 @@ RELEVANCE_PROMPT_TEMPLATE = """You are scoring how directly a research paper ans
 USER'S QUESTION:
 "{question}"
 
-PAPER ABSTRACT:
+PAPER:
+Title: {title}
+Authors: {authors}
+Year: {year}
+Journal: {journal}
+
+ABSTRACT:
 {abstract}
 
 Score the paper's directness of fit, 1 to 5:
 
-5 - Direct answer. The paper's main contribution explicitly addresses the user's question.
+5 - Direct answer. The paper IS the answer (e.g. it is the foundational paper for a discovery question, or its main contribution explicitly addresses the question).
 4 - Strong fit. The paper substantially addresses the question, even if not its main focus.
 3 - Partial fit. The paper touches on the question but is mainly about something else.
 2 - Adjacent. The paper is in the same area but doesn't really answer the question.
 1 - Not relevant. The paper only mentions the topic in passing or not at all.
 
-Be strict about the difference between 3 and 4. A paper that USES a method without COMPARING it to alternatives is a 3 for "which papers compare X and Y" - not a 4.
+IMPORTANT - read carefully:
+
+For questions about WHO, WHEN, or WHERE something was first discovered or described, the PRIMARY paper (the one that first reported the finding) is a 5, even if the abstract doesn't restate that it was the first. Use the title, authors, year, and journal to judge whether this is the primary source. Foundational papers rarely announce themselves as foundational in their own abstracts.
+
+For methodological-comparison questions (e.g. "which papers compare X and Y"), a paper that USES one method without COMPARING it to alternatives is a 3 - not a 4.
+
+A 2023 review claiming "X was discovered in 2005" is at most a 4 for a "when was X discovered" question - the primary 2005 paper is the 5.
 """
 
 
-def score_relevance(*, question: str, abstract: str) -> RelevanceResult:
-    """Score how directly a paper answers the user's question (1-5)."""
+def score_relevance(
+    *,
+    question: str,
+    abstract: str,
+    title: str = "(not provided)",
+    authors: str = "(not provided)",
+    year: str = "(not provided)",
+    journal: str = "(not provided)",
+) -> RelevanceResult:
+    """Score how directly a paper answers the user's question (1-5).
+
+    Metadata (title, authors, year, journal) is part of the relevance signal:
+    a 2005 paper by the Mosers in Nature IS the answer to "who discovered grid
+    cells in 2005" even if its abstract doesn't restate this. The earlier
+    abstract-only version of this prompt failed exactly that case.
+    """
     prompt = RELEVANCE_PROMPT_TEMPLATE.format(
         question=question.strip(),
+        title=title.strip(),
+        authors=authors.strip(),
+        year=year.strip(),
+        journal=journal.strip(),
         abstract=abstract.strip(),
     )
     return _structured_generate(

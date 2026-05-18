@@ -1,4 +1,16 @@
-"""NeuroLit 
+"""NeuroLit — Day 2: PubMed search + citation verification.
+
+Day 2 adds two things on top of Day 1:
+
+1. `fetch_abstract(pmid)` — let the verifier re-fetch a paper's abstract by
+   PMID. Day 1's `search_pubmed` already returns abstracts in its result, but
+   exposing fetch separately keeps the verification step usable even if the
+   draft citations came from a stale or external source later.
+
+2. `verify_and_finalize_citations(...)` — the agent is REQUIRED to call this
+   before producing its final answer. It runs description-grounding and
+   relevance-scoring on each draft citation, demoting or rewriting as needed.
+
 Run with:
     cd neurolit/
     adk web
@@ -210,6 +222,7 @@ def verify_and_finalize_citations(
             continue
 
         abstract = fetch["paper"]["abstract"]
+        paper = fetch["paper"]
 
         # Step 1: description grounding.
         grounding = verify_description(abstract=abstract, description=description)
@@ -227,8 +240,17 @@ def verify_and_finalize_citations(
         else:
             audit_parts.append(f"description supported ({grounding.confidence})")
 
-        # Step 2: relevance scoring.
-        relevance = score_relevance(question=question, abstract=abstract)
+        # Step 2: relevance scoring. Pass metadata so primary sources score
+        # correctly on "who/when/where" questions where the abstract alone
+        # is insufficient (a 2005 paper IS the answer to "discovered in 2005").
+        relevance = score_relevance(
+            question=question,
+            abstract=abstract,
+            title=paper.get("title", ""),
+            authors=", ".join(paper.get("authors", [])),
+            year=str(paper.get("year", "")),
+            journal=paper.get("journal", ""),
+        )
         audit_parts.append(f"relevance={relevance.score}/5: {relevance.rationale}")
 
         # Step 3: placement decision.
