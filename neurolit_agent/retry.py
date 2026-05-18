@@ -44,10 +44,29 @@ def _extract_retry_delay(error_message: str) -> float:
     return DEFAULT_BACKOFF_SECONDS
 
 
-def _is_rate_limit_error(exc: BaseException) -> bool:
-    """Identify 429s without hard-coupling to google-genai internals."""
+def _is_retryable_error(exc: BaseException) -> bool:
+    """Identify transient errors worth retrying.
+
+    Two classes:
+      - 429 RESOURCE_EXHAUSTED: rate limit hit. Retryable on per-minute limits
+        (the suggested delay tells us how long). Per-day quota is also a 429
+        but no amount of retrying within the day will help; we still retry
+        because we can't tell the two apart from the error alone, and the
+        retry will fail fast.
+      - 503 UNAVAILABLE: Google's servers are overloaded. Usually resolves
+        in seconds. Worth retrying.
+
+    Non-transient errors (400 bad request, 401 auth, 404 not found, etc.)
+    propagate immediately so we don't mask real bugs.
+    """
     text = str(exc).lower()
-    return "429" in text or "resource_exhausted" in text or "rate limit" in text
+    return (
+        "429" in text
+        or "resource_exhausted" in text
+        or "rate limit" in text
+        or "503" in text
+        or "unavailable" in text
+    )
 
 
 def with_retry(fn: Callable[[], T], *, label: str = "llm_call") -> T:
@@ -69,14 +88,14 @@ def with_retry(fn: Callable[[], T], *, label: str = "llm_call") -> T:
         try:
             return fn()
         except Exception as exc:
-            if not _is_rate_limit_error(exc):
+            if not _is_retryable_error(exc):
                 raise
             last_exc = exc
             if attempt == MAX_ATTEMPTS:
                 break
             delay = min(_extract_retry_delay(str(exc)), MAX_BACKOFF_SECONDS)
             delay += random.uniform(0, 2)  # Jitter so parallel agents don't sync up.
-            print(f"[retry] {label} hit rate limit on attempt {attempt}; "
+            print(f"[retry] {label} retryable error on attempt {attempt}; "
                   f"sleeping {delay:.1f}s")
             time.sleep(delay)
 
