@@ -23,6 +23,7 @@ from typing import Any
 
 import requests
 from google.adk.agents.llm_agent import Agent
+from google.adk.tools import ToolContext
 
 from .schemas import VerifiedCitation
 from .verification import score_relevance, verify_description
@@ -36,17 +37,34 @@ REQUEST_TIMEOUT = 15
 # our Day 1 finding that Guo 2024 was a "3" mis-placed as a main citation.
 MAIN_CITATION_MIN_SCORE = 4
 
+# Hard cap on searches per question. Day 2 testing found the agent looped 7
+# times on an adversarial query (a paper that doesn't exist) because the
+# soft "cap yourself at 3 searches" instruction was ignored. This is the
+# enforced version: the tool itself refuses past the cap.
+MAX_SEARCHES_PER_QUESTION = 4
+
+# Session-state key for the per-question search counter.
+_SEARCH_COUNT_KEY = "search_count"
+
 
 # ---------------------------------------------------------------------------
 # Tool 1: search_pubmed (unchanged from Day 1)
 # ---------------------------------------------------------------------------
 
-def search_pubmed(query: str, max_results: int = 5) -> dict[str, Any]:
+def search_pubmed(
+    query: str,
+    tool_context: ToolContext,
+    max_results: int = 5,
+) -> dict[str, Any]:
     """Search PubMed for neuroscience papers matching the query.
 
     Use when the user asks a literature question and you need to find papers.
     Returns paper metadata: pmid, title, authors, year, journal, abstract, url.
     Always cite specific PMIDs from this tool's results - never cite from memory.
+
+    There is a hard limit on searches per question. If you hit it, stop
+    searching and either conclude with the papers found so far, or tell the
+    user the topic could not be found. Do not keep trying new queries.
 
     Args:
         query: PubMed search query. Boolean operators (AND, OR, NOT) and field
@@ -54,10 +72,27 @@ def search_pubmed(query: str, max_results: int = 5) -> dict[str, Any]:
         max_results: Max papers to return (default 5, capped at 20).
 
     Returns:
-        Dict with status, query, count, and a papers list.
+        Dict with status, query, count, and a papers list. If the per-question
+        search limit is reached, returns status='limit_reached' instead.
     """
     if not query or not query.strip():
         return {"status": "error", "error_message": "query is empty"}
+
+    # Enforce the per-question search cap using session state. The counter is
+    # reset by verify_and_finalize_citations at the end of each question.
+    count = tool_context.state.get(_SEARCH_COUNT_KEY, 0)
+    if count >= MAX_SEARCHES_PER_QUESTION:
+        return {
+            "status": "limit_reached",
+            "message": (
+                f"Search limit ({MAX_SEARCHES_PER_QUESTION}) reached for this "
+                "question. Do not search again. Conclude with the papers found "
+                "so far, or tell the user the topic could not be found."
+            ),
+            "searches_used": count,
+        }
+    tool_context.state[_SEARCH_COUNT_KEY] = count + 1
+
     max_results = max(1, min(max_results, 20))
 
     try:
@@ -178,6 +213,7 @@ def fetch_abstract(pmid: str) -> dict[str, Any]:
 def verify_and_finalize_citations(
     question: str,
     draft_citations: list[dict[str, str]],
+    tool_context: ToolContext,
 ) -> dict[str, Any]:
     """Verify draft citations and produce the final, audited list.
 
@@ -193,6 +229,9 @@ def verify_and_finalize_citations(
     Use only the returned 'main' citations in the main answer body, and the
     'related' citations in a clearly labeled 'Related work' section.
 
+    Calling this also resets the per-question search counter, so the next
+    question starts with a fresh search budget.
+
     Args:
         question: The user's original question, verbatim. Used for relevance scoring.
         draft_citations: List of {"pmid": "...", "description": "..."} dicts.
@@ -200,6 +239,10 @@ def verify_and_finalize_citations(
     Returns:
         Dict with status and a 'citations' list of verified records.
     """
+    # This call marks the end of work on one question: reset the search
+    # counter so the next question gets its own search budget.
+    tool_context.state[_SEARCH_COUNT_KEY] = 0
+
     if not question or not question.strip():
         return {"status": "error", "error_message": "question is empty"}
     if not draft_citations:
@@ -297,7 +340,10 @@ root_agent = Agent(
 
         "## Workflow for every literature question\n\n"
         "1. Use `search_pubmed` to find candidate papers. Construct focused "
-        "queries; refine if needed; cap yourself at 3 searches per question.\n"
+        "queries; refine if needed. There is a hard limit of 4 searches per "
+        "question. If a search returns status='limit_reached', STOP searching "
+        "immediately - conclude with the papers you have, or if none are "
+        "relevant, tell the user the topic or paper could not be found.\n"
         "2. From the search results, draft a list of citations you intend "
         "to use. Each draft is a `{'pmid': '...', 'description': '...'}` "
         "where description is your one-line role for that paper.\n"

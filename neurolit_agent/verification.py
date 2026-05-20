@@ -135,6 +135,27 @@ For questions about WHO, WHEN, or WHERE something was first discovered or descri
 For methodological-comparison questions (e.g. "which papers compare X and Y"), a paper that USES one method without COMPARING it to alternatives is a 3 - not a 4.
 
 A 2023 review claiming "X was discovered in 2005" is at most a 4 for a "when was X discovered" question - the primary 2005 paper is the 5.
+
+## Rules for writing your rationale
+
+Your rationale must describe what THIS paper's abstract actually says, plus its
+metadata (title, authors, year). It must NOT:
+  - Assert that a paper is "the foundational" or "the first" paper for a
+    finding unless the abstract itself supports that, OR the title plainly
+    states it. Sharing authors or an era with foundational work does NOT make
+    a paper foundational.
+  - State a discovery year or discoverer that the abstract does not contain.
+    The paper's own publication year is a fact; claims about when a phenomenon
+    was "discovered" are not, unless the abstract says so.
+  - Describe the paper as being about something not in its abstract.
+
+If you believe the paper is a foundational source, say so cautiously, e.g.
+"published in {year} by {authors}; the abstract describes [X], consistent with
+a primary report of this finding" - not "this is THE foundational paper that
+first described X" unless the abstract states it.
+
+When in doubt, describe the abstract and stop. An accurate, modest rationale is
+better than a confident, wrong one.
 """
 
 
