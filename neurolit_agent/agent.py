@@ -46,6 +46,33 @@ MAX_SEARCHES_PER_QUESTION = 4
 # Session-state key for the per-question search counter.
 _SEARCH_COUNT_KEY = "search_count"
 
+# Conference-proceedings records (abstract books) bundle hundreds of unrelated
+# mini-abstracts under one PMID. They produce spurious AND-matches and their
+# huge abstracts bloat the verification LLM calls. We drop them from results.
+# A real paper abstract is at most ~600 words; these run to thousands.
+_MAX_REASONABLE_ABSTRACT_WORDS = 1200
+_PROCEEDINGS_TITLE_MARKERS = (
+    "annual meeting",
+    "annual computational",
+    "abstracts from",
+    "conference abstracts",
+    "proceedings of",
+    "meeting abstracts",
+)
+
+
+def _looks_like_proceedings(paper: dict[str, Any]) -> bool:
+    """True if a record looks like a conference proceedings / abstract book.
+
+    Two signals: an implausibly long abstract (real paper abstracts are short),
+    or a title that matches a known proceedings pattern.
+    """
+    abstract = paper.get("abstract", "") or ""
+    if len(abstract.split()) > _MAX_REASONABLE_ABSTRACT_WORDS:
+        return True
+    title = (paper.get("title", "") or "").lower()
+    return any(marker in title for marker in _PROCEEDINGS_TITLE_MARKERS)
+
 
 # ---------------------------------------------------------------------------
 # Tool 1: search_pubmed (unchanged from Day 1)
@@ -119,7 +146,30 @@ def search_pubmed(
         )
         efetch.raise_for_status()
         papers = _parse_pubmed_xml(efetch.text)
-        return {"status": "success", "query": query, "count": len(papers), "papers": papers}
+
+        # Drop conference-proceedings records: they cause spurious AND-matches
+        # and their huge abstracts bloat downstream verification LLM calls.
+        filtered = [p for p in papers if not _looks_like_proceedings(p)]
+        dropped = len(papers) - len(filtered)
+
+        result: dict[str, Any] = {
+            "status": "success",
+            "query": query,
+            "count": len(filtered),
+            "papers": filtered,
+        }
+        if dropped:
+            result["note"] = (
+                f"{dropped} conference-proceedings record(s) were filtered out "
+                "as not citable."
+            )
+        if not filtered:
+            result["note"] = (
+                "No usable papers found"
+                + (f" ({dropped} proceedings record(s) filtered)" if dropped else "")
+                + ". Try broader terms, or conclude the topic could not be found."
+            )
+        return result
 
     except requests.RequestException as exc:
         return {"status": "error", "error_message": f"PubMed request failed: {exc}"}
@@ -344,14 +394,20 @@ root_agent = Agent(
         "question. If a search returns status='limit_reached', STOP searching "
         "immediately - conclude with the papers you have, or if none are "
         "relevant, tell the user the topic or paper could not be found.\n"
-        "2. From the search results, draft a list of citations you intend "
-        "to use. Each draft is a `{'pmid': '...', 'description': '...'}` "
+        "2. **If searches return no usable papers** (count=0, or only results "
+        "that clearly don't match the question), do NOT call "
+        "`verify_and_finalize_citations`. There is nothing to verify. Skip "
+        "straight to telling the user the paper or topic could not be found, "
+        "and if the question assumed a specific paper exists, say plainly that "
+        "no such paper was found. Stop there.\n"
+        "3. Otherwise, from the search results, draft a list of citations you "
+        "intend to use. Each draft is a `{'pmid': '...', 'description': '...'}` "
         "where description is your one-line role for that paper.\n"
-        "3. **REQUIRED:** call `verify_and_finalize_citations` with the user's "
-        "original question and your draft citations. This step runs description-"
-        "grounding and relevance-scoring; you MUST do this before producing the "
-        "final answer.\n"
-        "4. Compose the final answer using ONLY the verified citation list:\n"
+        "4. **REQUIRED (only when you have real draft citations):** call "
+        "`verify_and_finalize_citations` with the user's original question and "
+        "your draft citations. This runs description-grounding and relevance-"
+        "scoring; you MUST do this before producing a cited final answer.\n"
+        "5. Compose the final answer using ONLY the verified citation list:\n"
         "   - Papers with placement='main' go in the main 'Papers cited' "
         "section and may be referenced throughout the answer.\n"
         "   - Papers with placement='related' go in a 'Related work' section "
