@@ -19,3 +19,8 @@ Fixes :
 - Added paper metadata (title, authors, year, journal) to the relevance prompt.
 - Added a hard search cap and an explicit early exit, if search returns no usable papers. 
 
+Day 3 :
+Setup: Agent adds a paper cache. When the agent looks up a paper, it saves a copy for the rest of the conversation — so if the same paper comes up again, it uses the saved copy instead of fetching it from PubMed a second time. The cache clears when the conversation ends.
+
+
+
