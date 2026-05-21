@@ -113,23 +113,29 @@ def score_citations(answer_text: str, gold_pmids: list[str]) -> dict[str, Any]:
 def score_adversarial(answer_text: str) -> dict[str, Any]:
     """Score an adversarial (no-paper-exists) question.
 
-    A correct answer cites NO papers. We also do a light text check for an
-    explicit not-found statement, but the citation count is the hard signal.
+    A correct answer cites NO papers AND is a real response (not an error).
+    We also do a light text check for an explicit not-found statement.
     """
-    cited = extract_pmids(answer_text)
-    text = (answer_text or "").lower()
+    text = (answer_text or "")
+    cited = extract_pmids(text)
+
+    # A crashed run also produces zero citations - don't score that as a pass.
+    is_error = text.strip().startswith("(eval error:")
+
+    lower = text.lower()
     not_found_phrases = (
         "no such paper", "could not be found", "not found", "does not exist",
         "no paper", "unable to find", "no 2024 paper", "no 2023 paper",
     )
-    states_not_found = any(phrase in text for phrase in not_found_phrases)
+    states_not_found = any(phrase in lower for phrase in not_found_phrases)
 
-    # Pass = produced no citations. The not-found statement is a bonus signal.
-    passed = len(cited) == 0
+    # Pass = a real response that produced no citations.
+    passed = (not is_error) and len(cited) == 0
 
     return {
         "cited_pmids": cited,
         "n_cited": len(cited),
+        "is_error": is_error,
         "states_not_found": states_not_found,
         "adversarial_pass": passed,
     }

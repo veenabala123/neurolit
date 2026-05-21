@@ -19,6 +19,13 @@ import datetime as dt
 from pathlib import Path
 from typing import Any
 
+# Load neurolit_agent/.env so the Gemini API key is available.
+# `adk web` does this automatically; a plain script must do it explicitly,
+# and it must happen BEFORE the ADK / agent imports below.
+from dotenv import load_dotenv
+ 
+load_dotenv(Path(__file__).resolve().parent.parent / "neurolit_agent" / ".env")
+
 from google.adk.runners import InMemoryRunner
 from google.genai import types as genai_types
 
