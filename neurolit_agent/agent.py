@@ -1,15 +1,9 @@
-"""NeuroLit — Day 2: PubMed search + citation verification.
+"""NeuroLit — Day 3: PubMed search + verification + session paper cache.
 
-Day 2 adds two things on top of Day 1:
-
-1. `fetch_abstract(pmid)` — let the verifier re-fetch a paper's abstract by
-   PMID. Day 1's `search_pubmed` already returns abstracts in its result, but
-   exposing fetch separately keeps the verification step usable even if the
-   draft citations came from a stale or external source later.
-
-2. `verify_and_finalize_citations(...)` — the agent is REQUIRED to call this
-   before producing its final answer. It runs description-grounding and
-   relevance-scoring on each draft citation, demoting or rewriting as needed.
+Day 3 adds a session-scoped paper cache: every paper retrieved this
+conversation is stored in ADK session state, keyed by PMID. The agent
+avoids re-fetching papers it has already seen, and can resolve references
+to earlier papers ("that Faes paper") via the list_cached_papers tool.
 
 Run with:
     cd neurolit/
@@ -72,6 +66,39 @@ def _looks_like_proceedings(paper: dict[str, Any]) -> bool:
         return True
     title = (paper.get("title", "") or "").lower()
     return any(marker in title for marker in _PROCEEDINGS_TITLE_MARKERS)
+
+
+# ---------------------------------------------------------------------------
+# Paper cache (Day 3)
+#
+# A session-scoped store of every paper retrieved this conversation, keyed by
+# PMID, living in ADK session state (tool_context.state). Two payoffs:
+#   - Avoids re-fetching papers already seen this session.
+#   - Lets the agent resolve references like "that Faes paper" to a concrete
+#     PMID via list_cached_papers.
+# Same mechanism as the search counter, just storing a dict of papers.
+# ---------------------------------------------------------------------------
+
+_PAPER_CACHE_KEY = "paper_cache"
+
+
+def _cache_papers(tool_context: ToolContext, papers: list[dict[str, Any]]) -> None:
+    """Store papers in the session paper cache, keyed by PMID."""
+    cache = tool_context.state.get(_PAPER_CACHE_KEY, {})
+    for paper in papers:
+        pmid = paper.get("pmid")
+        if pmid:
+            cache[pmid] = paper
+    # Re-assign so ADK persists the mutation to session state.
+    tool_context.state[_PAPER_CACHE_KEY] = cache
+
+
+def _get_cached_paper(
+    tool_context: ToolContext, pmid: str
+) -> dict[str, Any] | None:
+    """Return a cached paper by PMID, or None if not cached."""
+    cache = tool_context.state.get(_PAPER_CACHE_KEY, {})
+    return cache.get(pmid)
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +179,9 @@ def search_pubmed(
         filtered = [p for p in papers if not _looks_like_proceedings(p)]
         dropped = len(papers) - len(filtered)
 
+        # Day 3: cache every usable paper so we don't re-fetch it this session.
+        _cache_papers(tool_context, filtered)
+
         result: dict[str, Any] = {
             "status": "success",
             "query": query,
@@ -224,22 +254,29 @@ def _parse_pubmed_xml(xml_text: str) -> list[dict[str, Any]]:
 # Tool 2: fetch_abstract (Day 2 new)
 # ---------------------------------------------------------------------------
 
-def fetch_abstract(pmid: str) -> dict[str, Any]:
+def fetch_abstract(pmid: str, tool_context: ToolContext) -> dict[str, Any]:
     """Fetch a single paper's metadata + abstract by PMID.
 
     Use this when you need to re-check what a specific paper actually says,
-    for example when verifying a citation's description.
+    for example when verifying a citation's description. Papers already seen
+    this session are served from the session cache without a network call.
 
     Args:
         pmid: PubMed ID, e.g. "15965463".
 
     Returns:
         Dict with status, and on success the paper dict (same shape as
-        a single entry in search_pubmed's papers list).
+        a single entry in search_pubmed's papers list). A 'from_cache' flag
+        indicates whether the paper was served from the session cache.
     """
     pmid = (pmid or "").strip()
     if not pmid.isdigit():
         return {"status": "error", "error_message": f"invalid PMID: {pmid!r}"}
+
+    # Day 3: serve from the session cache if we already have this paper.
+    cached = _get_cached_paper(tool_context, pmid)
+    if cached is not None:
+        return {"status": "success", "paper": cached, "from_cache": True}
 
     try:
         efetch = requests.get(
@@ -251,9 +288,36 @@ def fetch_abstract(pmid: str) -> dict[str, Any]:
         papers = _parse_pubmed_xml(efetch.text)
         if not papers:
             return {"status": "error", "error_message": f"PMID {pmid} not found"}
-        return {"status": "success", "paper": papers[0]}
+        # Cache it so a later fetch this session is free.
+        _cache_papers(tool_context, papers)
+        return {"status": "success", "paper": papers[0], "from_cache": False}
     except requests.RequestException as exc:
         return {"status": "error", "error_message": f"PubMed fetch failed: {exc}"}
+
+
+def list_cached_papers(tool_context: ToolContext) -> dict[str, Any]:
+    """List papers already retrieved earlier in this conversation.
+
+    Use this to resolve references to papers from earlier turns - e.g. if the
+    user says "tell me more about that Faes paper" or "the second one you
+    mentioned", check here for the PMID instead of searching again.
+
+    Returns:
+        Dict with status, count, and a 'papers' list of {pmid, title, authors,
+        year, journal} summaries (abstracts omitted to keep the list compact).
+    """
+    cache = tool_context.state.get(_PAPER_CACHE_KEY, {})
+    summaries = [
+        {
+            "pmid": p.get("pmid", ""),
+            "title": p.get("title", ""),
+            "authors": p.get("authors", []),
+            "year": p.get("year", ""),
+            "journal": p.get("journal", ""),
+        }
+        for p in cache.values()
+    ]
+    return {"status": "success", "count": len(summaries), "papers": summaries}
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +369,7 @@ def verify_and_finalize_citations(
         if not pmid or not description:
             continue
 
-        fetch = fetch_abstract(pmid)
+        fetch = fetch_abstract(pmid, tool_context)
         if fetch["status"] != "success":
             verified.append(VerifiedCitation(
                 pmid=pmid, description=description, relevance_score=0,
@@ -429,11 +493,20 @@ root_agent = Agent(
         "- If the user's question has a false premise (e.g. asks about a paper "
         "that doesn't exist), say so plainly. Do not invent citations.\n\n"
 
+        "## Follow-up questions and session memory\n\n"
+        "Papers retrieved earlier in the conversation are remembered. If the "
+        "user refers to a paper from an earlier turn (e.g. 'that Faes paper', "
+        "'the second one', 'the grid cell paper you mentioned'), call "
+        "`list_cached_papers` to find its PMID instead of searching again, "
+        "then use `fetch_abstract` to get its details. Only run a new "
+        "`search_pubmed` if the cache does not already contain what's needed.\n\n"
+
         "## Output format\n\n"
         "Short orientation paragraph (1-2 sentences framing the question and "
         "any term disambiguations). Then claims grouped by theme, referencing "
         "main citations by PMID. Then 'Papers cited' list with PMID + URL "
         "for main citations. Then 'Related work' if any."
     ),
-    tools=[search_pubmed, fetch_abstract, verify_and_finalize_citations],
+    tools=[search_pubmed, fetch_abstract, list_cached_papers,
+           verify_and_finalize_citations],
 )
