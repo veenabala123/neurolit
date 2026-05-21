@@ -26,7 +26,7 @@ from neurolit_agent.agent import root_agent
 from eval.questions import EVAL_QUESTIONS
 from eval.scorers import score_adversarial, score_citations
 
-APP_NAME = "neurolit-eval"
+APP_NAME = "neurolit_eval"
 REPORT_PATH = Path("eval/reports")
 
 
