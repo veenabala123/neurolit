@@ -12,6 +12,11 @@ neurolit/
 │   ├── retry.py                  retry on Gemini 429 / 503 errors
 │   ├── __init__.py
 │   └── .env.example              copy to .env, add your Gemini key
+├── eval/                       Automated evaluation harness
+│   ├── questions.py              the eval question set
+│   ├── scorers.py                deterministic scorers
+│   ├── run_eval.py               runs the agent, scores, writes a report
+│   └── __init__.py
 │
 ├── notes/                      ← evaluation diary, drives each iteration
 │   ├── project_notes.md      
